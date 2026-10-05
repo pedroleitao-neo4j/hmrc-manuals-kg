@@ -131,6 +131,82 @@ with evidence to traverse and verify them - rather than to be a formal
 knowledge base for deductive reasoning. The ontology is coarse because the
 agent, not the schema, is what resolves the fine-grained distinctions.
 
+## Agentic Loop Design
+
+The tax agent (`app.py` + `agent/`) is a LangGraph tool loop in
+`agent/graph.py`, built around the retrieval design above: **search →
+expand by id → read**, with the model - not a fixed pipeline - deciding
+what to do next at every step.
+
+### The loop
+
+The compiled graph has three nodes and two edges:
+
+```mermaid
+flowchart LR
+    START --> AGENT
+    AGENT["agent node<br/>Fireworks chat model<br/>+ 4 tools bound"]
+    AGENT -->|tool_calls present| TOOLS
+    TOOLS["tools node<br/>execute calls,<br/>results as ToolMessages"]
+    TOOLS --> AGENT
+    AGENT -->|no tool_calls| FINAL
+    FINAL["final node<br/>schema-enforced<br/>cited answer"]
+    FINAL --> END
+```
+
+1. **`agent` node** - the Fireworks chat model (temperature 0) is invoked
+   with the system prompt, the conversation so far, and the four tools
+   from `agent/tools.py` bound: `semantic_search`, `expand`,
+   `read_sections`, and `cypher` (read-only escape hatch). It either
+   emits one or more tool calls or plain content.
+2. **Routing** - a conditional edge inspects only the last message:
+   `tool_calls` present → `tools`; absent → `final`. There is no explicit
+   stop tool or token; *not calling a tool* is itself the decision to
+   stop.
+3. **`tools` node** - executes the requested calls, returning results as
+   `ToolMessage`s (capped at 20k chars; errors become tool results rather
+   than exceptions), then loops back to `agent`. The tool docstrings are
+   part of the design: `semantic_search` returns section `id`s and entity
+   `key`s, and `expand` / `read_sections` consume those ids directly, so
+   the model is steered away from re-finding nodes with unindexable text
+   scans and toward id-anchored traversal.
+4. **`final` node** - runs exactly once and terminates the graph. The
+   conversation is flattened (tool results become user-role context so
+   the chat API never sees unmatched tool-call frames) and one direct
+   Fireworks call is made with `response_format: json_schema`, enforcing
+   the citation contract: `answer` + `sources` (title/url) + `graph_refs`
+   (from_entity/relationship/to_entity). Every claim must cite the
+   section URLs actually used; if the graph didn't contain the answer,
+   the model must say so and leave `sources` empty. If the model ignores
+   the schema, its raw text is surfaced as the answer with empty
+   citations rather than failing the request.
+
+### Stopping
+
+Stopping is **model-driven with a hard backstop**:
+
+- **Primary: the model decides.** When it judges it has enough evidence,
+  it simply stops emitting tool calls and produces content instead -
+  that routes to `final`. The system prompt (`agent/prompt.py`) steers
+  this judgement; there is no round counter the model must obey.
+- **Backstop: `MAX_TOOL_ROUNDS = 8`.** The `tools` node counts tool
+  rounds in the LangGraph state (declared as a state channel - LangGraph
+  silently drops update keys that aren't channels). Past the limit, tool
+  calls are no longer executed; each one gets a `ToolMessage` saying
+  *"Tool round limit reached - produce your final cited answer now with
+  what you have"*. The model's next tool-free turn then routes to
+  `final`, so the graph can only ever exit through the `final` node -
+  it cannot loop forever, and it cannot end without a schema-conformant
+  (or explicitly schema-ignored) cited answer.
+
+### Serving
+
+`app.py` wraps this in FastAPI: `POST /api/chat` runs the agent and
+returns the final answer; `POST /api/chat/stream` streams SSE events
+(each `tool_call` as it happens, then the `answer`); and the answer's
+subgraph is rendered to a self-contained visualization served at
+`/viz/{viz_id}`.
+
 ## How the LLM output is constrained
 
 The extraction model doesn't produce free text that we then parse:
