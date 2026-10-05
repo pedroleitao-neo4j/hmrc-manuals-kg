@@ -10,7 +10,7 @@ embeddings - queried by semantic search and a small FastAPI tax agent.
 flowchart LR
     GOV["GOV.UK<br/>Search + Content APIs"] --> CRAWL
 
-    subgraph CRAWL ["1. Crawl — crawl_hmrc_manuals.py"]
+    subgraph CRAWL ["1. Crawl - crawl_hmrc_manuals.py"]
         direction TB
         DISC["Discover manuals &amp; sections<br/>(search API)"] --> FETCH["Fetch section HTML<br/>(content API)"]
         FETCH --> EXTRACT["Extract text structurally<br/>(headings, bullets, pipe-joined tables)"]
@@ -20,7 +20,7 @@ flowchart LR
 
     RAW --> ENRICH
 
-    subgraph ENRICH ["2. Enrich — enrich_hmrc_manuals.py"]
+    subgraph ENRICH ["2. Enrich - enrich_hmrc_manuals.py"]
         direction TB
         CHUNK["Chunk sections<br/>(~1,200 words)"] --> LLM["Fireworks LLM<br/>deepseek-v4-flash-0731<br/>grammar-constrained JSON"]
         LLM --> MERGE["Merge &amp; dedupe<br/>(entities by key,<br/>relationships by src/type/tgt)"]
@@ -31,7 +31,7 @@ flowchart LR
 
     ENRICHED --> LOAD
 
-    subgraph LOAD ["3. Load — load_hmrc_to_neo4j.py"]
+    subgraph LOAD ["3. Load - load_hmrc_to_neo4j.py"]
         direction TB
         GRAPH["MERGE into Neo4j<br/>(idempotent)"] --> EMBED["Embed sections &amp; entities<br/>qwen3-embedding-8b · 1024 dims"]
         ECACHE2[(".embed_cache/")] -.->|resume for free| EMBED
@@ -124,7 +124,7 @@ cp .env.example .env
 # the Neo4j connection vars (needed for stage 3 and querying)
 ```
 
-Run everything from the project root — all stages read `.env` from there.
+Run everything from the project root - all stages read `.env` from there.
 
 ### 1. Crawl (free, ~rate-limited)
 
@@ -144,11 +144,11 @@ Writes `hmrc_manuals/<slug>.json`.
 .venv/bin/python3 enrich_hmrc_manuals.py --dry-run   # see chunk counts / cost, no API calls
 ```
 
-The full corpus is ~24M words — a full pass is a paid, multi-hour job, but
+The full corpus is ~24M words - a full pass is a paid, multi-hour job, but
 chunk results are cached in `.enrich_cache/`, so interrupting and rerunning
 replays the cache for free. `--chunk-words` and `--max-tokens` are coupled
 (the model is a reasoning model: bigger chunks burn the token ceiling on
-reasoning and return nothing) — leave the defaults unless you raise both.
+reasoning and return nothing) - leave the defaults unless you raise both.
 
 Writes `hmrc_manuals_enriched/<slug>.json`.
 
@@ -160,7 +160,7 @@ Writes `hmrc_manuals_enriched/<slug>.json`.
 .venv/bin/python3 load_hmrc_to_neo4j.py --dry-run
 ```
 
-Every write is a MERGE, so the loader is idempotent — rerun it, or rerun it
+Every write is a MERGE, so the loader is idempotent - rerun it, or rerun it
 after re-enriching a single manual, and only the differences land. Embeddings
 are cached in `.embed_cache/` (also free on reruns).
 
