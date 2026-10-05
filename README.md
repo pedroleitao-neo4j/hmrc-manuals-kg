@@ -91,7 +91,45 @@ and their relationships interlink. Precision is traded for coverage and
 joinability: fine-grained distinctions are preserved in the entity `name`,
 `definition`, and relationship `evidence` rather than in the type system.
 
-This architecture favors **semantic search** and **question answering** over strict reasoning: the model can find relevant sections and entities even if the query uses different words than the manuals, and it can answer questions by joining evidence across manuals. That is, the graph is designed to support agent based discovery of relevant information, rather than to be a formal knowledge base for deductive reasoning.
+This architecture is a deliberate bet on **agentic retrieval** over
+zero-shot GraphRAG. A strict ontology is optimized for one-shot querying: the
+answer must be reachable by a single traversal from a single entry point, so
+any error or gap in the taxonomy - a missing subclass, a wrong type
+assignment, two manuals naming the same concept differently - becomes a dead
+end with no recovery path. Our concept graph is optimized for the opposite:
+an agent that searches, reads evidence, rephrases, and traverses again. With
+coarse types the graph rarely dead-ends - an agent that lands on a slightly
+wrong node still sees its neighbours, its `MENTIONED_IN` sections, and the
+`evidence` quotes on each relationship, which is usually enough to notice the
+mis-step and re-anchor on the right `key` or `section_id`. The fine-grained
+distinctions a strict ontology would encode as types live in the entity
+`name`, `definition`, and relationship `evidence`, where the agent can read
+and verify them instead of having to guess them at query-construction time.
+
+There is empirical support for this bet. Recent benchmarks show that agentic,
+multi-round retrieval narrows or closes the gap that graph structure is
+supposed to provide: *RAGSearch* ([arXiv:2604.09666](https://arxiv.org/abs/2604.09666))
+finds that agentic search "substantially improves dense RAG and narrows the
+performance gap to GraphRAG", with the residual GraphRAG advantage appearing
+only on complex multi-hop reasoning - exactly the case where an agent can
+iterate rather than needing the perfect first hop. *RAG vs. GraphRAG*
+([arXiv:2502.11371](https://arxiv.org/abs/2502.11371)) finds the two are
+complementary, with plain RAG winning on single-hop factual queries and
+GraphRAG on multi-hop reasoning - and this project gets both sides of that
+split, since the agent can do a plain vector search when the question is
+simple and traverse relationships when it isn't. And work on agentic graph
+search itself - *GraphSearch* ([arXiv:2509.22009](https://arxiv.org/abs/2509.22009)),
+iterative retrieval in GraphRAG
+([arXiv:2509.25530](https://arxiv.org/abs/2509.25530)) - reports that
+multi-round retrieval over an entity–relation graph surfaces evidence that
+static, one-shot retrieval misses, while keeping the graph's cost advantage
+over embedding-only pipelines.
+
+In short: the graph is designed to support agent-based discovery of relevant
+information - semantic search to find candidate nodes, typed relationships
+with evidence to traverse and verify them - rather than to be a formal
+knowledge base for deductive reasoning. The ontology is coarse because the
+agent, not the schema, is what resolves the fine-grained distinctions.
 
 ## How the LLM output is constrained
 
