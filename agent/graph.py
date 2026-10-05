@@ -193,7 +193,8 @@ def get_graph():
 def run_agent(question: str) -> Generator[dict, None, None]:
     """Run the agent, yielding SSE-friendly event dicts.
 
-    Events: {type: "tool_call", name, args}
+    Events: {type: "thinking", text} — model reasoning between tool calls
+            {type: "tool_call", name, args}
             {type: "answer", answer, sources, graph_refs}
     """
     state: dict[str, Any] = {"messages": [HumanMessage(content=question)]}
@@ -201,6 +202,8 @@ def run_agent(question: str) -> Generator[dict, None, None]:
         for node, update in step.items():
             if node == "agent" and update.get("messages"):
                 ai = update["messages"][-1]
+                if ai.content:
+                    yield {"type": "thinking", "text": ai.content}
                 if getattr(ai, "tool_calls", None):
                     for call in ai.tool_calls:
                         yield {"type": "tool_call", "name": call["name"],
