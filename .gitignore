@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Caches
+.embed_cache/
+.enrich_cache/
+
+# Crawl outputs / data (regenerable via the scripts)
+hmrc_manuals/
+hmrc_manuals_enriched/
+crawl.log
+
+# Misc artifacts
+*.png
+.DS_Store

@@ -1,0 +1,12 @@
+beautifulsoup4
+neo4j
+tqdm
+# agent web service (app.py + agent/)
+fastapi
+uvicorn[standard]
+langgraph
+langchain-core
+langchain-fireworks
+neo4j_viz
+pydantic
+requests

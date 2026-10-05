@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HMRC Manuals Tax Agent</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --panel:#fff; --ink:#1c2430; --mut:#68758a;
+          --acc:#2f6fed; --chip:#eef3fe; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
+  #log { display:flex; flex-direction:column; gap:14px; }
+  .msg { background:var(--panel); border-radius:12px; padding:14px 16px;
+         box-shadow:0 1px 2px rgba(20,30,50,.06); }
+  .msg.user { background:var(--acc); color:#fff; }
+  .msg p { margin:.3em 0; }
+  .tool { font-size:12.5px; color:var(--mut); border-left:3px solid var(--chip);
+          padding:2px 10px; }
+  .tool b { color:var(--ink); }
+  .srcs { margin-top:10px; padding-top:8px; border-top:1px solid #e8ecf2; }
+  .srcs h4 { margin:6px 0; font-size:12px; text-transform:uppercase;
+             letter-spacing:.04em; color:var(--mut); }
+  .srcs ul { margin:4px 0; padding-left:18px; font-size:13.5px; }
+  .srcs a { color:var(--acc); text-decoration:none; }
+  .chip { display:inline-block; background:var(--chip); color:var(--acc);
+          border-radius:20px; padding:1px 10px; font-size:12.5px;
+          margin:2px 4px 2px 0; }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--bg);
+         border-top:1px solid #e4e8ee; }
+  form .in { max-width:860px; margin:0 auto; padding:12px 16px; display:flex;
+             gap:10px; }
+  input { flex:1; border:1px solid #d4dae2; border-radius:10px; padding:11px 14px;
+          font-size:15px; outline:none; }
+  input:focus { border-color:var(--acc); }
+  button { border:0; background:var(--acc); color:#fff; border-radius:10px;
+           padding:11px 20px; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HMRC Manuals Tax Agent</h1>
+  <div class="sub">Answers from the HMRC internal manuals knowledge graph.</div>
+  <div id="log"></div>
+</div>
+<form id="f"><div class="in">
+  <input id="q" placeholder="e.g. Are there any UK tax implications for businesses who pay VAT abroad?" autocomplete="off">
+  <button id="go">Ask</button>
+</div></form>
+
+<script>
+const log = document.getElementById('log');
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function addMsg(cls, html){ const d=document.createElement('div');
+  d.className='msg '+cls; d.innerHTML=html; log.appendChild(d); return d; }
+
+function renderAnswer(a, el){
+  let h = marked.parse(esc(a.answer||''));
+  h += '<div class="srcs">';
+  if (a.sources && a.sources.length){
+    h += '<h4>Sources</h4><ul>' +
+      a.sources.map(s=>`<li><a href="${s.url}" target="_blank">${esc(s.title||s.url)}</a></li>`).join('') + '</ul>';
+  } else {
+    h += '<h4>Sources</h4><p>No sources found in the graph for this question.</p>';
+  }
+  if (a.graph_refs && a.graph_refs.length){
+    h += '<h4>Graph cross-references</h4>' +
+      a.graph_refs.map(r=>`<span class="chip">${esc(r.from_entity)} —[:${esc(r.relationship)}]→ ${esc(r.to_entity)}</span>`).join('');
+  }
+  if (a.viz_id){
+    h += '<h4>Answer graph</h4>' +
+      `<iframe src="/viz/${esc(a.viz_id)}" style="width:100%;height:460px;border:1px solid #e4e8ee;border-radius:10px"></iframe>`;
+  }
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+async function ask(q){
+  addMsg('user', esc(q));
+  const steps = addMsg('tool','');
+  const ans = addMsg('agent','<p><i>thinking…</i></p>');
+  const btn = document.getElementById('go');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/chat/stream', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question:q})});
+    const reader = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '', events = [];
+    while (true){
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0){
+        const frame = buf.slice(0,i).trim(); buf = buf.slice(i+2);
+        if (!frame.startsWith('data: ')) continue;
+        const data = frame.slice(6);
+        if (data === '[DONE]') continue;
+        const ev = JSON.parse(data); events.push(ev);
+        if (ev.type === 'tool_call'){
+          steps.innerHTML += `<div><b>${esc(ev.name)}</b>(` +
+            Object.values(ev.args||{}).map(a=>esc(typeof a==='string'?a:JSON.stringify(a))).join(', ').slice(0,160) + ')</div>';
+        }
+        if (ev.type === 'answer') renderAnswer(ev, ans);
+        if (ev.type === 'error') renderAnswer({answer:'**Error:** '+esc(ev.message)}, ans);
+      }
+    }
+    if (!events.some(e=>e.type==='answer'||e.type==='error'))
+      ans.innerHTML = '<p><i>No answer returned.</i></p>';
+  } catch (e){
+    ans.innerHTML = '<p><b>Error:</b> '+esc(e.message)+'</p>';
+  } finally { btn.disabled = false; }
+}
+
+document.getElementById('f').addEventListener('submit', e=>{
+  e.preventDefault();
+  const q = document.getElementById('q').value.trim();
+  if (q){ document.getElementById('q').value=''; ask(q); }
+});
+</script>
+</body>
+</html>
