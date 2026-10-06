@@ -1,5 +1,9 @@
 # HMRC Manuals Knowledge Graph
 
+<p align="center">
+  <img src="project-image.jpeg" alt="HMRC Manuals Knowledge Graph">
+</p>
+
 A Neo4j knowledge graph of the HMRC internal manuals, crawled from GOV.UK,
 enriched with tax concepts and relationships by an LLM, and loaded with vector
 embeddings - queried by semantic search and a small FastAPI tax agent.
