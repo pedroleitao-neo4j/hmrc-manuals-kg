@@ -177,15 +177,15 @@ vectors must come from the same model, which is why the loader and
 **Centralities (compute_centralities.py, offline).** The entity graph is
 also scored globally: `Entity.pagerank` (normalised so the most central
 concept is 1.0), `Entity.community` and `Entity.community_size`.
-The batch script projects the entity graph — excluding hub noise
+The batch script projects the entity graph - excluding hub noise
 (`RELATED_TO`/`REFERENCES`/`EXAMPLE_OF` edges, `ADMINISTERED_BY`/
 `GOVERNED_BY`, and `Organisation`/`Jurisdiction` entities) and weighting
-edges by `mentions` — then runs PageRank, Louvain and WCC. Two backends:
+edges by `mentions` - then runs PageRank, Louvain and WCC. Two backends:
 Aura Graph Analytics (`gds.graph.project` / `gds.pageRank.mutate` /
 `gds.louvain.mutate` / `gds.wcc.mutate`, then
 `gds.graph.nodeProperties.write`; needs ~8GB of session memory for this
 graph), auto-detected, with a pure-Python PageRank + union-find fallback
-for instances without it. The agent never runs algorithms at query time —
+for instances without it. The agent never runs algorithms at query time -
 it reads the properties (see the `centrality` tool), and treats them as
 routing hints, not citable facts: there is no section URL behind a
 PageRank score.
