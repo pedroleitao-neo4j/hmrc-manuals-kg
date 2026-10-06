@@ -113,6 +113,10 @@ async function ask(q){
           steps.innerHTML += `<details><summary>Model thinking</summary>` +
             `<p>${esc(ev.text)}</p></details>`;
         }
+        if (ev.type === 'note'){
+          steps.innerHTML += `<details><summary>Model says</summary>` +
+            `<p>${esc(ev.text)}</p></details>`;
+        }
         if (ev.type === 'tool_call'){
           steps.innerHTML += `<div><b>${esc(ev.name)}</b>(` +
             Object.values(ev.args||{}).map(a=>esc(typeof a==='string'?a:JSON.stringify(a))).join(', ').slice(0,160) + ')</div>';

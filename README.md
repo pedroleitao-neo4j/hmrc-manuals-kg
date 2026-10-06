@@ -74,6 +74,132 @@ Two layers:
   relationships (`RELIEVES`, `HAS_RATE`, `SUBJECT_TO`, …), each carrying
   `evidence` quotes, `mentions`, and `created_from` (the manual slug).
 
+## Graph architecture and how it is built
+
+### Node and relationship inventory
+
+| Element | Properties | How many |
+|---|---|---|
+| `(:Document)` | `title`, `slug`, `url`, `description` | one per manual cover page |
+| `(:Section)` | `heading`, `section_id`, `text`, `url`, `position`, `embedding` | ~84k |
+| `(:Entity)` | `key`, `name`, `type`, `definition`, `aliases`, `embedding`, `created_from` | ~237k |
+| `(:Document)-[:HAS_SECTION]->(:Section)` | - | manual → top-level pages |
+| `(:Section)-[:HAS_CHILD]->(:Section)` | - | page hierarchy |
+| `(:Section)-[:NEXT]->(:Section)` | - | reading order within a parent |
+| `(:Section)-[:CROSS_REFERENCES]->(:Section)` | - | explicit links in the prose |
+| `(:Document)-[:DISCUSSES {salience, salience_rank, mentions}]->(:Entity)` | | per-(manual, entity) |
+| `(:Entity)-[:MENTIONED_IN]->(:Section)` | - | per-(entity, section) |
+| 22 typed `(:Entity)-[:REL]->(:Entity)` | `evidence[]`, `mentions`, `created_from` | - |
+
+Two things are worth calling out:
+
+- **Entity nodes carry no `salience`** - it is only on the `DISCUSSES` edge.
+  Salience is a judgement a manual makes about a concept ("the Capital Gains
+  Manual is substantially about Business Asset Disposal Relief"), not a
+  property of the concept itself: the same entity can be `primary` in one
+  manual and `mentioned` in another. Since entities MERGE globally on `key`,
+  a node-level property would have the manuals fighting to overwrite each
+  other. `MENTIONED_IN` is likewise merged without properties - it is just
+  the section-level link.
+- **Every entity→entity relationship carries provenance**: `evidence` (a
+  list of quotes from the manual text), `mentions`, and `created_from` -
+  the `Document.slug` of the manual the edge was extracted from. A fact in
+  the graph is never just asserted; you can always pull the quote and the
+  source manual behind it.
+
+### How each part is constructed
+
+**Lexical layer (crawl + load).** The crawler discovers every manual and
+section via the GOV.UK Search API and fetches each page's HTML from the
+Content API, extracting text structurally (headings kept, list items
+bulleted, table rows pipe-joined). The loader MERGEs one `Document` per
+manual, one `Section` per page (keyed on `section_id`), then wires
+`HAS_SECTION`, `HAS_CHILD`, `NEXT` (from each parent's child ordering) and
+`CROSS_REFERENCES` (from links found in the text).
+
+**Entities (enrich).** Each manual is chunked (~1,200 words) and every
+chunk goes to the extraction model with the grammar-constrained
+`EXTRACTION_SCHEMA` (see [How the LLM output is constrained](#how-the-llm-output-is-constrained)).
+The model returns `entities[]` with `name`, `type` (closed enum of 35),
+`definition`, `aliases`, `section_ids` and `salience`
+(`primary|secondary|mentioned`).
+
+**Entity identity - the normalised `key`.** Across chunks, entities merge
+on `norm(name)` (`enrich_hmrc_manuals.py:555`): lowercase, strip leading
+articles, drop punctuation, collapse whitespace - so "the CGT relief" and
+"CGT Relief" fold to one node. On merge, the longest definition wins, the
+highest salience wins (`SALIENCE_RANK`: primary 3 > secondary 2 >
+mentioned 1), and aliases / `section_ids` union. Aliases are also folded
+into resolution, so a relationship whose endpoint is stated as an alias
+still resolves to the canonical entity.
+
+**`MENTIONED_IN` (load).** For each merged entity, its validated
+`section_ids` (dropped at merge time if not among the manual's real
+section ids) are unwound and MERGEd as
+`(Entity)-[:MENTIONED_IN]->(Section)` - propertyless, since it is just
+"this concept appears on this page".
+
+**`DISCUSSES` (load).** For each entity the loader MERGEs
+`(Document {slug})-[di:DISCUSSES]->(Entity {key})`, then sets the
+edge-level properties (`load_hmrc_to_neo4j.py:352-357`):
+
+- `di.salience` / `di.salience_rank` - upgraded monotonically: a rerun only
+  raises salience, never lowers it (`salience_rank` guard), so reloading
+  is idempotent even when chunks disagree.
+- `di.mentions` - accumulated chunk count.
+
+Because the edge is per (manual, entity), the same concept extracted from
+five manuals yields five `DISCUSSES` edges with independent salience -
+and one joined entity node. That is the mechanism that makes the graph
+queryable per-manual while joining across manuals.
+
+**Entity→entity relationships (enrich + load).** The model also returns
+`relationships[]` (`source`, `type` from a closed enum of 22, `target`,
+`evidence`, `section_ids`). At merge time, both endpoints must resolve to
+a known entity (by key or alias) and the type must be in the enum -
+otherwise the edge is dropped; dangling edges are forbidden even though
+the prompt already asks for it. Edges dedupe on
+(normalised source, type, normalised target), with evidence quotes
+unioned. At load time, the type is baked into a per-type Cypher template
+(plain Cypher cannot MERGE a dynamic relationship type), so the edge type
+itself carries the semantics: `(Relief)-[:RELIEVES]->(Charge)`.
+`evidence` and `mentions` are SET on the edge, and `created_from` records
+the manual slug on first creation.
+
+**Embeddings (load).** Section `text` and entity `definition` are embedded
+with Fireworks `qwen3-embedding-8b` (1024 dims via MRL) and stored as
+`Section.embedding` / `Entity.embedding`, backed by the vector indexes
+`section_embedding` and `entity_embedding` - this is what
+`vector_search.py` and the agent's `semantic_search` tool query. Query
+vectors must come from the same model, which is why the loader and
+`vector_search.py` share the embedding call.
+
+**Centralities (compute_centralities.py, offline).** The entity graph is
+also scored globally: `Entity.pagerank` (normalised so the most central
+concept is 1.0), `Entity.community` and `Entity.community_size`.
+The batch script projects the entity graph — excluding hub noise
+(`RELATED_TO`/`REFERENCES`/`EXAMPLE_OF` edges, `ADMINISTERED_BY`/
+`GOVERNED_BY`, and `Organisation`/`Jurisdiction` entities) and weighting
+edges by `mentions` — then runs PageRank, Louvain and WCC. Two backends:
+Aura Graph Analytics (`gds.graph.project` / `gds.pageRank.mutate` /
+`gds.louvain.mutate` / `gds.wcc.mutate`, then
+`gds.graph.nodeProperties.write`; needs ~8GB of session memory for this
+graph), auto-detected, with a pure-Python PageRank + union-find fallback
+for instances without it. The agent never runs algorithms at query time —
+it reads the properties (see the `centrality` tool), and treats them as
+routing hints, not citable facts: there is no section URL behind a
+PageRank score.
+
+### Idempotency
+
+Every write in stage 3 is a MERGE keyed on stable identifiers
+(`slug`, `section_id`, entity `key`, relationship
+source/type/target), so the whole load is idempotent: rerun it after
+re-enriching a single manual and only the differences land. The two
+known accumulation quirks are `di.mentions` (summed on every rerun - treat
+it as an upper bound) and the monotonic salience upgrade (which is the
+intended behaviour).
+
 ## Why relationships and concepts, not a strict ontology
 
 The point of the graph is that facts **join across 320+ manuals**. A strict
@@ -155,10 +281,12 @@ flowchart LR
 ```
 
 1. **`agent` node** - the Fireworks chat model (temperature 0) is invoked
-   with the system prompt, the conversation so far, and the four tools
+   with the system prompt, the conversation so far, and the five tools
    from `agent/tools.py` bound: `semantic_search`, `expand`,
-   `read_sections`, and `cypher` (read-only escape hatch). It either
-   emits one or more tool calls or plain content.
+   `read_sections`, `centrality` (global importance / ego-network
+   ranking - routing hints, not citable facts), and `cypher` (read-only
+   escape hatch). It either emits one or more tool calls or plain
+   content.
 2. **Routing** - a conditional edge inspects only the last message:
    `tool_calls` present → `tools`; absent → `final`. There is no explicit
    stop tool or token; *not calling a tool* is itself the decision to
@@ -278,7 +406,18 @@ Every write is a MERGE, so the loader is idempotent - rerun it, or rerun it
 after re-enriching a single manual, and only the differences land. Embeddings
 are cached in `.embed_cache/` (also free on reruns).
 
-### 4. Query
+### 4. Centralities (optional, GDS session is metered while it runs)
+
+```bash
+.venv/bin/python3 compute_centralities.py --memory 8   # GDS when available
+.venv/bin/python3 compute_centralities.py --backend python --dry-run
+```
+
+Writes `Entity.pagerank` / `community` / `community_size` (see
+[Graph architecture](#graph-architecture-and-how-it-is-built)). Rerun it
+after re-enriching or reloading; reruns are idempotent.
+
+### 5. Query
 
 ```bash
 # Semantic search (JSON by default)

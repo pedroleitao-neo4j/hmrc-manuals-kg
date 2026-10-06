@@ -98,7 +98,37 @@ CALL (e) {
                   url: coalesce(s.url, doc.url)}) AS rels
 }
 RETURN e.key AS key, e.name AS name, e.type AS type,
-       e.definition AS definition, rels
+       e.definition AS definition,
+       e.pagerank AS pagerank, e.community AS community,
+       e.community_size AS community_size, rels
+"""
+
+# Ego-network neighbour ranking: the query-local version of centrality.
+# Global `pagerank` / `community` are precomputed offline by
+# compute_centralities.py (the GDS plugin is not available on this Aura
+# instance, so the batch script computes them in Python and writes them
+# back as data). Both are routing hints, not citable facts — there is no
+# section URL behind a PageRank score.
+CENTRALITY_CYPHER = """
+MATCH (e:Entity {key: $key})
+CALL (e) {
+  MATCH (e)-[r]-(o:Entity)
+  WHERE NOT o.type IN $excl_types
+  WITH o, count(r) AS rels, sum(coalesce(r.mentions, 0)) AS strength,
+       collect(DISTINCT type(r)) AS types
+  ORDER BY strength DESC LIMIT $per
+  RETURN collect({key: o.key, name: o.name, type: o.type,
+                  rels: rels, strength: strength, types: types,
+                  pagerank: o.pagerank})[..$per] AS neighbors
+}
+CALL (e) {
+  MATCH (e)-[:MENTIONED_IN]->(s:Section)
+  RETURN count(s) AS sections
+}
+RETURN e.key AS key, e.name AS name, e.type AS type,
+       e.definition AS definition, e.pagerank AS pagerank,
+       e.community AS community, e.community_size AS community_size,
+       sections, neighbors
 """
 
 
@@ -169,7 +199,9 @@ def cypher(query: str, params_json: str = "{}") -> str:
         (list of quotes), `mentions`, and `created_from` (the manual slug,
         = Document.slug — NOT a section id).
     Sections have heading, section_id, text, url, position.
-    Entities have key (lowercased name, unique), name, type, definition.
+    Entities have key (lowercased name, unique), name, type, definition,
+    and (when compute_centralities.py has run) pagerank, community,
+    community_size.
     Write queries are rejected.
     """
     try:
@@ -178,6 +210,33 @@ def cypher(query: str, params_json: str = "{}") -> str:
         return f"params_json is not valid JSON: {e}"
     rows = run_read_cypher(_driver(), query, params)
     return json.dumps(rows, ensure_ascii=False, default=str)
+
+
+def centrality(entity_key: str) -> str:
+    """Ego-network importance of a concept: its global centrality and its
+    strongest graph neighbours, ranked by relationship strength.
+
+    entity_key: an entity `key` from semantic_search / expand. Returns the
+    entity's global `pagerank` (1.0 = most central concept in the extracted
+    knowledge graph) and `community` (weakly-connected component id, 0 =
+    the giant component), plus its neighbours ranked by summed relationship
+    `mentions`, with their own pagerank. Use it to judge which concepts are
+    core vs fringe when several candidates look plausible. Call it on EVERY promising entity
+    candidate BEFORE expanding, so core concepts (high pagerank) are
+    expanded and cited before fringe ones. These are
+    routing hints, NOT citable facts — cite the sections/evidence behind
+    any claim, never the scores.
+    """
+    key = (entity_key or "").strip()
+    if not key:
+        return json.dumps({"error": "pass a single entity_key"})
+    rows = run_read_cypher(
+        _driver(), CENTRALITY_CYPHER,
+        {"key": key, "per": 25,
+         "excl_types": ["Organisation", "Jurisdiction"]})
+    if not rows:
+        return json.dumps({"error": f"unknown entity key: {key}"})
+    return json.dumps(rows[0], ensure_ascii=False)
 
 
 _DRIVER = None
@@ -192,7 +251,7 @@ def _driver():
     return _DRIVER
 
 
-TOOLS = [semantic_search, expand, read_sections, cypher]
+TOOLS = [semantic_search, expand, read_sections, centrality, cypher]
 _ID_LIST = {"type": "string",
             "description": 'JSON list of ids, e.g. ["DT15600", "DT15602"]'}
 TOOL_SCHEMAS = [
@@ -227,6 +286,18 @@ TOOL_SCHEMAS = [
              "type": "object",
              "properties": {"section_ids": _ID_LIST},
              "required": ["section_ids"]}}},
+    {"type": "function",
+     "function": {
+         "name": "centrality",
+         "description": centrality.__doc__.strip(),
+         "parameters": {
+             "type": "object",
+             "properties": {
+                 "entity_key": {
+                     "type": "string",
+                     "description": "One entity key, e.g. 'business asset "
+                                    "disposal relief'"}},
+             "required": ["entity_key"]}}},
     {"type": "function",
      "function": {
          "name": "cypher",

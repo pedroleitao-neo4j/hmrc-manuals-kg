@@ -1,6 +1,6 @@
 """LangGraph agent: search the graph, then answer with citations.
 
-Flow: agent node (Fireworks chat model with the three tools) ↔ tools node,
+Flow: agent node (Fireworks chat model with the bound tools) ↔ tools node,
 until the model stops calling tools; then a final node produces a
 structured answer (answer + sources + graph cross-references) enforced by
 a JSON schema — the citation contract from AGENTS.md.
@@ -193,7 +193,10 @@ def get_graph():
 def run_agent(question: str) -> Generator[dict, None, None]:
     """Run the agent, yielding SSE-friendly event dicts.
 
-    Events: {type: "thinking", text} — model reasoning between tool calls
+    Events: {type: "thinking", text} — the model's chain-of-thought
+              (Fireworks returns it as `reasoning_content`, which LangChain
+              does not put on .content)
+            {type: "note", text} — short inter-tool narration in .content
             {type: "tool_call", name, args}
             {type: "answer", answer, sources, graph_refs}
     """
@@ -202,8 +205,11 @@ def run_agent(question: str) -> Generator[dict, None, None]:
         for node, update in step.items():
             if node == "agent" and update.get("messages"):
                 ai = update["messages"][-1]
+                reasoning = ai.additional_kwargs.get("reasoning_content")
+                if reasoning:
+                    yield {"type": "thinking", "text": reasoning}
                 if ai.content:
-                    yield {"type": "thinking", "text": ai.content}
+                    yield {"type": "note", "text": ai.content}
                 if getattr(ai, "tool_calls", None):
                     for call in ai.tool_calls:
                         yield {"type": "tool_call", "name": call["name"],
