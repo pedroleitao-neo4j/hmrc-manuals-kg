@@ -339,6 +339,23 @@ returns the final answer; `POST /api/chat/stream` streams SSE events
 subgraph is rendered to a self-contained visualization served at
 `/viz/{viz_id}`.
 
+FastAPI is the **serving layer** of the architecture: it wraps the LLM
+tax agent (`app.py` + the `agent/` package) in a web API on top of the
+Neo4j knowledge graph. Its four endpoints are:
+
+- `POST /api/chat` - non-streaming: runs the agentic loop (`run_agent`)
+  and returns the final structured, cited answer.
+- `POST /api/chat/stream` - streaming: emits SSE events so the UI shows
+  each `tool_call` as the agent works, followed by the `answer`.
+- `GET /` - serves the chat web UI (`static/index.html`).
+- `GET /viz/{viz_id}` - serves the self-contained Neo4j visualization of
+  the subgraph that produced an answer.
+
+Its role is a thin HTTP wrapper - request validation (Pydantic
+`ChatRequest`), SSE streaming, and static file serving - while all the
+intelligence lives in the agent package (the agentic loop over the
+graph/vector search) and the graph itself.
+
 ## How the LLM output is constrained
 
 The extraction model doesn't produce free text that we then parse:
