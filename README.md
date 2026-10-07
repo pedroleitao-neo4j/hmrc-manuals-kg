@@ -1,10 +1,10 @@
-# HMRC Manuals Knowledge Graph
+# Making Tax Advice Agentic
 
 <p align="center">
   <img src="project-image.jpeg" alt="HMRC Manuals Knowledge Graph">
 </p>
 
-A Neo4j knowledge graph of the HMRC internal manuals, crawled from GOV.UK,
+A Neo4j knowledge graph of the [HMRC internal manuals](https://www.gov.uk/government/collections/hmrc-manuals), crawled from GOV.UK,
 enriched with tax concepts and relationships by an LLM, and loaded with vector
 embeddings - queried by semantic search and a small FastAPI tax agent.
 
@@ -26,7 +26,7 @@ flowchart LR
 
     subgraph ENRICH ["2. Enrich - enrich_hmrc_manuals.py"]
         direction TB
-        CHUNK["Chunk sections<br/>(~1,200 words)"] --> LLM["Fireworks LLM<br/>deepseek-v4-flash-0731<br/>grammar-constrained JSON"]
+        CHUNK["Chunk sections<br/>(~1,200 words)"] --> LLM["LLM<br/>deepseek-v4-flash-0731<br/>grammar-constrained JSON"]
         LLM --> MERGE["Merge &amp; dedupe<br/>(entities by key,<br/>relationships by src/type/tgt)"]
         ECACHE[(".enrich_cache/")] -.->|resume for free| CHUNK
     end
@@ -53,7 +53,7 @@ flowchart LR
    API. Text is extracted structurally - headings kept, list items bulleted,
    table rows pipe-joined so tabular rate data survives.
 2. **Enrich** - `enrich_hmrc_manuals.py` packs sections into ~1,200-word
-   chunks and sends each to a Fireworks reasoning model
+   chunks and sends each to a reasoning model
    (`deepseek-v4-flash-0731`) to extract entities and relationships. Results
    are cached per chunk (`.enrich_cache/`), so interrupted runs resume for
    free. Entities seen in multiple chunks merge into one node with their
@@ -61,7 +61,7 @@ flowchart LR
    evidence quotes unioned.
 3. **Load** - `load_hmrc_to_neo4j.py` writes the graph with MERGE (idempotent
    - rerun only lands differences) and embeds section text and entity
-   definitions with Fireworks `qwen3-embedding-8b` (reduced to 1024 dims via
+   definitions with `qwen3-embedding-8b` (reduced to 1024 dims via
    MRL), also cached (`.embed_cache/`).
 
 ## Graph model
@@ -114,7 +114,7 @@ Two things are worth calling out:
 ### How each part is constructed
 
 **Lexical layer (crawl + load).** The crawler discovers every manual and
-section via the GOV.UK Search API and fetches each page's HTML from the
+section via the [GOV.UK Search API](https://www.api.gov.uk/gds/gov-uk-search/#gov-uk-search) and fetches each page's HTML from the
 Content API, extracting text structurally (headings kept, list items
 bulleted, table rows pipe-joined). The loader MERGEs one `Document` per
 manual, one `Section` per page (keyed on `section_id`), then wires
@@ -171,7 +171,7 @@ itself carries the semantics: `(Relief)-[:RELIEVES]->(Charge)`.
 the manual slug on first creation.
 
 **Embeddings (load).** Section `text` and entity `definition` are embedded
-with Fireworks `qwen3-embedding-8b` (1024 dims via MRL) and stored as
+with `qwen3-embedding-8b` (1024 dims via MRL) and stored as
 `Section.embedding` / `Entity.embedding`, backed by the vector indexes
 `section_embedding` and `entity_embedding` - this is what
 `vector_search.py` and the agent's `semantic_search` tool query. Query
@@ -221,7 +221,7 @@ and their relationships interlink. Precision is traded for coverage and
 joinability: fine-grained distinctions are preserved in the entity `name`,
 `definition`, and relationship `evidence` rather than in the type system.
 
-This architecture is a deliberate bet on **agentic retrieval** over
+This architecture is a deliberate bet on [**agentic retrieval**](https://docs.nvidia.com/nemo/retriever/26.8.1/extraction/agentic-retrieval-concept/) over
 zero-shot GraphRAG. A strict ontology is optimized for one-shot querying: the
 answer must be reachable by a single traversal from a single entry point, so
 any error or gap in the taxonomy - a missing subclass, a wrong type
@@ -263,7 +263,7 @@ agent, not the schema, is what resolves the fine-grained distinctions.
 
 ## Agentic Loop Design
 
-The tax agent (`app.py` + `agent/`) is a LangGraph tool loop in
+The tax agent (`app.py` + `agent/`) is a [LangGraph](https://github.com/langchain-ai/langgraph) tool loop in
 `agent/graph.py`, built around the retrieval design above: **search →
 expand by id → read**, with the model - not a fixed pipeline - deciding
 what to do next at every step.
@@ -275,7 +275,7 @@ The compiled graph has three nodes and two edges:
 ```mermaid
 flowchart LR
     START --> AGENT
-    AGENT["agent node<br/>Fireworks chat model<br/>+ 4 tools bound"]
+    AGENT["agent node<br/>Chat model<br/>+ 4 tools bound"]
     AGENT -->|tool_calls present| TOOLS
     TOOLS["tools node<br/>execute calls,<br/>results as ToolMessages"]
     TOOLS --> AGENT
@@ -284,7 +284,7 @@ flowchart LR
     FINAL --> END
 ```
 
-1. **`agent` node** - the Fireworks chat model (temperature 0) is invoked
+1. **`agent` node** - the chat model (temperature 0) is invoked
    with the system prompt, the conversation so far, and the five tools
    from `agent/tools.py` bound: `semantic_search`, `expand`,
    `read_sections`, `centrality` (global importance / ego-network
@@ -305,7 +305,7 @@ flowchart LR
 4. **`final` node** - runs exactly once and terminates the graph. The
    conversation is flattened (tool results become user-role context so
    the chat API never sees unmatched tool-call frames) and one direct
-   Fireworks call is made with `response_format: json_schema`, enforcing
+   call is made with `response_format: json_schema`, enforcing
    the citation contract: `answer` + `sources` (title/url) + `graph_refs`
    (from_entity/relationship/to_entity). Every claim must cite the
    section URLs actually used; if the graph didn't contain the answer,
@@ -333,7 +333,7 @@ Stopping is **model-driven with a hard backstop**:
 
 ### Serving
 
-`app.py` wraps this in FastAPI: `POST /api/chat` runs the agent and
+`app.py` wraps this in [FastAPI](https://fastapi.tiangolo.com/): `POST /api/chat` runs the agent and
 returns the final answer; `POST /api/chat/stream` streams SSE events
 (each `tool_call` as it happens, then the `answer`); and the answer's
 subgraph is rendered to a self-contained visualization served at
@@ -361,7 +361,7 @@ graph/vector search) and the graph itself.
 The extraction model doesn't produce free text that we then parse:
 
 - **Grammar-constrained JSON** - requests use `response_format: json_schema`
-  with `EXTRACTION_SCHEMA`, compiled by Fireworks into a grammar. The model
+  with `EXTRACTION_SCHEMA`, compiled by the LLM into a grammar. The model
   can only emit JSON matching the schema - it cannot produce malformed
   output, extra properties, or omit fields (every property required,
   `additionalProperties: false`).
